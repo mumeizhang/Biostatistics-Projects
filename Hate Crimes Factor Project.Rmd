@@ -1,0 +1,390 @@
+title: "BM1 final project"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, include = FALSE}
+library(tidyverse)
+rm(list = ls())
+library(arsenal)
+library(ggplot2)
+library(HH)
+library(leaps)
+library(jtools)
+library(modelr)
+library(mgcv)
+library(olsrr)
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+```
+
+```{r, echo = F, message = FALSE, warning=FALSE}
+# Data input
+setwd("~/Desktop/My courses/2. Biostat Method/Final Project")
+crimes<-read.csv("HateCrimes.csv") %>% 
+  drop_na()
+# Data format transformation
+crimes = 
+  crimes %>% 
+  mutate(
+    unemployment = as.factor(unemployment),
+    unemployment = fct_relevel(unemployment, "low", "high"),
+    urbanization = as.factor(urbanization),
+    urbanization = fct_relevel(urbanization, "low", "high"),
+    hate_crimes_per_100k_splc = as.numeric(crimes$hate_crimes_per_100k_splc))
+str(crimes)
+```
+
+# Descriptive statistics+Graphs
+```{r, echo = F, message = FALSE, warning=FALSE}
+# Descriptive Characteristics of study sample
+labels1 <- list(hate_crimes_per_100k_splc = "Hate crime rate per 100k population", unemployment = "Level of state unemployment", urbanization="Level of state urbanization", median_household_income="Median household income per state",perc_population_with_high_school_degree="Percentage of adults (>25 yrs) with a high school degree",perc_non_citizen="Percentage of population that are not US citizens",gini_index="Gini index",perc_non_white="Percentage of population that are non-white")
+controls1 <- tableby.control(total = T,test=F, numeric.stats = c("meansd", "median", "iqr","range", "Nmiss2"),cat.stats = c("countpct", "Nmiss2"),stats.labels = list(meansd = "Mean/SD",median = "Median",iqr="IQR",range = "Min - Max",Nmiss2 = "Missing",countpct = "N (%)"),digits = 2L,digits.count = 0L)
+tb1<-tableby(~hate_crimes_per_100k_splc+unemployment+urbanization+median_household_income+perc_population_with_high_school_degree+perc_non_citizen+gini_index+perc_non_white,data=crimes,control = controls1)
+summary(tb1, title = "Descriptive Characteristics of Study Sample, Hate Crimes Occurring in the United States (By State)", labelTranslations = labels1, text=T)
+# Histogram of the outcome distribution
+mytheme <- theme_bw() + theme(plot.title=element_text(hjust=0.5),axis.title=element_text(size=rel(1)),axis.text=element_text(size=rel(1)),legend.position = "top")
+ggplot(data=crimes,aes(x=hate_crimes_per_100k_splc))+
+geom_histogram(fill="lightblue",color="darkblue",linetype="dashed",alpha=0.5) +
+labs(title="Histogram of Hate Crimes Rate Per 100k Population in United States",x="Hate Crimes Rate (Per 100 K Population)", y = "Count")+mytheme
+## District of columbia might be a outlier
+# 2. Boxplots for each variable to see if there is any outlier or influential points.
+par(mfrow=c(2,3))
+boxplot(crimes$hate_crimes_per_100k_splc, main='Hate Crimes Rate')
+boxplot(crimes$median_household_income, main='Median Household Income')
+boxplot(crimes$perc_population_with_high_school_degree,main='Percentage with Highschool Degree' )
+boxplot(crimes$perc_non_citizen, main='Percentage of Non-Citizen')
+boxplot(crimes$perc_non_white, main='Percentage of Non-White')
+boxplot(crimes$gini_index, main='Gini Index')
+## District of columbia might be a outlier
+```
+
+## Varible Selection
+```{r, echo = F, message = FALSE, warning=FALSE}
+# Correlation matrix
+library("corrplot")
+matrix1<-cor(crimes[,-c(1:3)],use="complete.obs")
+matrix1 %>% 
+    corrplot::corrplot(
+    method = "square",
+    type = "lower",
+    addCoef.col = "black", 
+    diag = T,
+    tl.cex = 0.5
+  )
+round(matrix1,2) # Cor(non-white and non-citizen): 0.75; cor(income and > high school degree):0.65
+```
+
+median_household_income and perc_population_with_high_school_degree may highly correlated.
+perc_non_white and perc_non_cizen may highly correlated.
+
+```{r}
+# 2. Simple linear regression model: hate crime rates~ gini index
+ggplot(data=crimes,aes(x=gini_index,y=hate_crimes_per_100k_splc))+
+geom_point(color="blue",alpha=0.5) +geom_smooth(method="lm",se=F,color="pink")+labs(title="Plot of Hate Crimes Rate By Gini Index",y="Hate Crimes Rate (Per 100 K Population)", x = "Gini Index")+mytheme
+res_crimes_gini<-lm(hate_crimes_per_100k_splc~gini_index,data=crimes)
+summary(res_crimes_gini)
+# 3. Varibale Selection- backwards selection
+res1 <- lm(hate_crimes_per_100k_splc ~ .-state, data=crimes)
+summary(res1)
+step1<-update(res1, . ~ . -perc_non_white)
+summary(step1)
+step2<-update(step1, . ~ . -unemployment)
+summary(step2)
+step3<-update(step2, . ~ . -median_household_income) 
+summary(step3)
+step4<-update(step3, . ~ . -perc_non_citizen) 
+summary(step4)
+step5<-update(step4, . ~ . -urbanization)
+summary(step5)
+multi_fit1<-lm(hate_crimes_per_100k_splc~perc_population_with_high_school_degree+gini_index,data=crimes)
+summary(multi_fit1)
+# 4. Criterion Selection
+best <- function(model, ...) 
+{
+  subsets <- regsubsets(formula(model), model.frame(model), ...)
+  subsets <- with(summary(subsets),
+                  cbind(p = as.numeric(rownames(which)), which, rss, rsq, adjr2, cp, bic))
+  
+  return(subsets)
+}  
+round(best(multi_fit1, nbest = 1), 3) # chose model2 with the minimum cp, BIC and highest adjusted R2
+```
+
+### just one step to get best fit.
+```{r}
+crimes = 
+  crimes %>% 
+  subset(select = c(-state))
+model_fit = 
+  lm(hate_crimes_per_100k_splc ~., data = crimes) %>% 
+  step(direction = "both")
+summary(model_fit)   ### get same model with Mumei
+```
+
+### interaction
+
+```{r}
+# 5. Check interactions between median income and perc of high school degree
+res_interaction<-lm(hate_crimes_per_100k_splc ~ gini_index + perc_population_with_high_school_degree * median_household_income ,data=crimes)
+summary(res_interaction) # No-interaction between income and high school degree
+anova(model_fit, res_interaction)
+#--------------------------------------------------------------------------------------------------------
+# Check interactions between urbanization and gini_index
+ggplot(data=crimes,aes(x=gini_index,y=hate_crimes_per_100k_splc,color=urbanization))+
+geom_point() +geom_smooth(method="lm",se=F)+labs(title="Plot of Hate Crimes Rate vs Gini index By Urbanization level ",y="Hate Crimes Rate (Per 100 K Population)", x = "Gini index")+mytheme
+res_interaction2<-lm(hate_crimes_per_100k_splc~perc_population_with_high_school_degree+gini_index*urbanization,data=crimes)
+summary(res_interaction2) # No interaction b/w urbanization and gini index
+anova(model_fit, res_interaction2)
+###  Check interactions between perc_non_white and gini_index
+res_interaction3<-lm(hate_crimes_per_100k_splc~perc_population_with_high_school_degree+gini_index*perc_non_white,data=crimes)
+summary(res_interaction3) 
+anova(model_fit, res_interaction3)#exist interaction b/w perc_non_white and gini index
+###  Check interactions between high school degree and unemployment
+res_interaction4<-lm(hate_crimes_per_100k_splc~perc_population_with_high_school_degree*unemployment+gini_index,data=crimes)
+summary(res_interaction4) 
+anova(model_fit, res_interaction4)
+###  Check interactions between gini index and unemployment
+res_interaction4<-lm(hate_crimes_per_100k_splc~perc_population_with_high_school_degree + unemployment*gini_index,data=crimes)
+summary(res_interaction4) 
+anova(model_fit, res_interaction4)
+# Check interactions between urbanization and high school degree
+res_interaction5<-lm(hate_crimes_per_100k_splc~perc_population_with_high_school_degree*urbanization+gini_index,data=crimes)
+summary(res_interaction5)
+anova(model_fit, res_interaction5)
+```
+The anova p-value of potential interaction between urbanization and gini index,and median income and perc of high school degree turn out to not be statistically significant. So even though the estimated slopes in the interaction model look very different, our estimates are quite variable, so we don’t have enough evidence to conclude that the interaction term (different slopes) is providing significant additional explanatory power over the simpler perc_population_with_high_school_degree+gini_index. (do not just copy this sentence, paraphrase it)
+
+There is an significant interaction between perc_non_white and gini index
+
+
+
+### find confounder
+
+```{r}
+reg_conf1 = lm(hate_crimes_per_100k_splc~perc_population_with_high_school_degree+gini_index + unemployment, data=crimes)
+summary(model_fit)
+summary(reg_conf1) ### coefficient changes for gini and high school degree is smaller than 1%, unemployment is not a confounder
+reg_conf2 = lm(hate_crimes_per_100k_splc~perc_population_with_high_school_degree+gini_index + urbanization, data=crimes)
+summary(model_fit)
+summary(reg_conf2) ### coefficient changes for gini and high school degree is smaller than 1%, urbanization is not a confounder
+reg_conf3 = lm(hate_crimes_per_100k_splc~perc_population_with_high_school_degree+gini_index + median_household_income, data=crimes)
+summary(model_fit)
+summary(reg_conf3)
+reg_conf4 = lm(hate_crimes_per_100k_splc~perc_population_with_high_school_degree+gini_index + perc_non_citizen, data=crimes)
+summary(model_fit)
+summary(reg_conf4) # 5% coefficient change for gini_index
+reg_conf5 = lm(hate_crimes_per_100k_splc~perc_population_with_high_school_degree+gini_index + perc_non_white, data=crimes)
+summary(model_fit)
+summary(reg_conf5)
+```
+
+coefficient changes for gini and high school degree is smaller than 1%, none of other variables are confounders
+
+## Model Diagnosis
+### check assumption， final model(finish variables selection)
+```{r}
+final_fit = lm(hate_crimes_per_100k_splc ~ perc_population_with_high_school_degree + gini_index,data=crimes)
+summary(final_fit)
+par(mfrow=c(2,2))
+plot(final_fit) # need transformation
+```
+
+
+## model diagonsis
+### box cox
+
+```{r}
+boxcox(final_fit)  # use natural log transformation
+```
+
+lamda =0, get maximum likelihood, so the outcome should be applied to log transformation.
+
+```{r}
+crime_log = 
+  crimes %>%
+  mutate(ln_hate_crime_outcome = log(hate_crimes_per_100k_splc, base = exp(1))) 
+  
+final_fit2 = 
+  lm(ln_hate_crime_outcome ~ perc_population_with_high_school_degree + gini_index , data = crime_log)
+summary(final_fit2)
+par(mfrow=c(2,2))
+plot(final_fit2)
+```
+
+### Identify Collinearity
+```{r}
+# Calculate the variance inflation factor (VIF)
+vif(final_fit2)
+```
+no VIF higher than 5, nothing should be removed because of collinearity
+
+### check for outliers
+
+```{r}
+# Measures of influence:
+# Gives DFFITS, Cook's Distance, Hat diagonal elements, and others.
+influence.measures(final_fit2)
+# Look at the Cook's distance lines and notice obs 9 as potential Y outliers/influential points
+
+# Remove observations 9
+crime_log_rm_9<-crime_log[c(-9),]
+mult.fit_no9<- lm(ln_hate_crime_outcome ~ perc_population_with_high_school_degree + gini_index , data = crime_log_rm_9)
+summary(mult.fit_no9)
+summary(final_fit2)
+mult.fit_no9 %>% 
+  broom::tidy() %>% 
+  knitr::kable()
+influence.measures(mult.fit_no9)
+par(mfrow=c(2,2))
+plot(mult.fit_no9)
+```
+
+
+# Model doesn't consider DC state
+## Varible Selection
+```{r, echo = F, message = FALSE, warning=FALSE}
+# Correlation matrix
+# Data input
+crimes = 
+  read.csv("HateCrimes.csv") %>% 
+  filter(state != "District of Columbia") %>% 
+  drop_na()
+# Data format transformation
+crimes = 
+  crimes %>% 
+  mutate(
+    unemployment = as.factor(unemployment),
+    unemployment = fct_relevel(unemployment, "low", "high"),
+    urbanization = as.factor(urbanization),
+    urbanization = fct_relevel(urbanization, "low", "high"),
+    hate_crimes_per_100k_splc = as.numeric(crimes$hate_crimes_per_100k_splc))
+str(crimes)
+library("corrplot")
+matrix1<-cor(crimes[,-c(1:3)],use="complete.obs")
+matrix1 %>% 
+    corrplot::corrplot(
+    method = "square",
+    type = "lower",
+    addCoef.col = "black", 
+    diag = T,
+    tl.cex = 0.5
+  )
+round(matrix1,2) # Cor(non-white and non-citizen): 0.75; cor(income and > high school degree):0.65
+```
+
+median_household_income and perc_population_with_high_school_degree may highly correlated.
+perc_non_white and perc_non_cizen may highly correlated.
+
+
+### just one step to get best fit.
+```{r}
+crimes = 
+  crimes %>% 
+  subset(select = c(-state))
+### stepwise
+model_fit = 
+  lm(hate_crimes_per_100k_splc ~., data = crimes) %>% 
+  step(direction = "both")
+summary(model_fit)   ### get same model with Mumei
+# sinse pvalue of gini is larger than 0.05
+#‘Partial’ F-test for nested models
+reg_onlyde = lm(hate_crimes_per_100k_splc ~ perc_population_with_high_school_degree, data = crimes)
+summary(reg_onlyde)
+anova(model_fit, reg_onlyde)
+qf(0.95, 1, 41)
+### Criterion Based P rocedures
+model <- lm(hate_crimes_per_100k_splc ~., data = crimes)
+ols_step_best_subset(model)
+```
+
+### interaction
+
+```{r}
+# Check interactions between urbanization and gini_index
+ggplot(data=crimes,aes(x=gini_index,y=hate_crimes_per_100k_splc,color=urbanization))+
+geom_point() +geom_smooth(method="lm",se=F)+labs(title="Plot of Hate Crimes Rate vs Gini index By Urbanization level ",y="Hate Crimes Rate (Per 100 K Population)", x = "Gini index")+mytheme
+res_interaction2<-lm(hate_crimes_per_100k_splc~perc_population_with_high_school_degree+gini_index*urbanization,data=crimes)
+summary(res_interaction2) # No interaction b/w urbanization and gini index
+anova(model_fit, res_interaction2)
+###  Check interactions between high school degree and unemployment
+res_interaction4<-lm(hate_crimes_per_100k_splc~perc_population_with_high_school_degree*unemployment+gini_index,data=crimes)
+summary(res_interaction4) 
+anova(model_fit, res_interaction4)
+###  Check interactions between gini index and unemployment
+res_interaction4<-lm(hate_crimes_per_100k_splc~perc_population_with_high_school_degree + unemployment*gini_index,data=crimes)
+summary(res_interaction4) 
+anova(model_fit, res_interaction4)
+# Check interactions between urbanization and high school degree
+res_interaction5<-lm(hate_crimes_per_100k_splc~perc_population_with_high_school_degree*urbanization+gini_index,data=crimes)
+summary(res_interaction5)
+anova(model_fit, res_interaction5)
+```
+The anova p-value of potential interaction between urbanization and gini index,and median income and perc of high school degree turn out to not be statistically significant. So even though the estimated slopes in the interaction model look very different, our estimates are quite variable, so we don’t have enough evidence to conclude that the interaction term (different slopes) is providing significant additional explanatory power over the simpler perc_population_with_high_school_degree+gini_index. (do not just copy this sentence, paraphrase it)
+
+
+
+
+### find confounder
+
+```{r}
+reg_conf1 = lm(hate_crimes_per_100k_splc~perc_population_with_high_school_degree+gini_index + unemployment, data=crimes)
+summary(model_fit)
+summary(reg_conf1) ### coefficient changes for gini and high school degree is smaller than 1%, unemployment is not a confounder
+reg_conf2 = lm(hate_crimes_per_100k_splc~perc_population_with_high_school_degree+gini_index + urbanization, data=crimes)
+summary(model_fit)
+summary(reg_conf2) 
+reg_urb = lm(hate_crimes_per_100k_splc~urbanization, data=crimes)
+summary(reg_urb)###  urbanization is not  a confounder
+reg_conf3 = lm(hate_crimes_per_100k_splc~perc_population_with_high_school_degree+gini_index + median_household_income, data=crimes)
+summary(model_fit)
+summary(reg_conf3)
+reg_conf4 = lm(hate_crimes_per_100k_splc~perc_population_with_high_school_degree+gini_index + perc_non_citizen, data=crimes)
+summary(model_fit)
+summary(reg_conf4) 
+reg_noncit = lm(hate_crimes_per_100k_splc~perc_non_citizen, data=crimes)
+summary(reg_noncit)# perc_non_citizen is not a confounder
+reg_conf5 = lm(hate_crimes_per_100k_splc~perc_population_with_high_school_degree+gini_index + perc_non_white, data=crimes)
+summary(model_fit)
+summary(reg_conf5)
+```
+No confounders
+
+## Model Diagnosis
+### check assumption， final model(finish variables selection)
+```{r}
+final_fit11 = lm(hate_crimes_per_100k_splc ~ perc_population_with_high_school_degree + gini_index,data=crimes)
+summary(final_fit11)
+par(mfrow=c(2,2))
+plot(final_fit11) # need transformation
+```
+
+
+## model diagonsis
+
+### Identify Collinearity
+```{r}
+# Calculate the variance inflation factor (VIF)
+vif(final_fit11)
+```
+no VIF higher than 5, nothing should be removed because of collinearity
+
+### check for outliers
+
+```{r}
+# Measures of influence:
+# Gives DFFITS, Cook's Distance, Hat diagonal elements, and others.
+influence.measures(final_fit11)
+final_fit11_no35 = lm(hate_crimes_per_100k_splc ~ perc_population_with_high_school_degree + gini_index,data=crimes[-35, ])
+summary(final_fit11_no35)
+summary(final_fit11)
+
+```
